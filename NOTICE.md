@@ -2,6 +2,8 @@
 
 ## This project
 
+The `Dolphin.exe` in the releases is an **unofficial, modified build** of Dolphin. It is not affiliated with or supported by the Dolphin Emulator Project; "Dolphin" is used only to name the software this build is derived from.
+
 Copyright (c) 2026 F-Zero AX LAN contributors. Licensed under **GPL-2.0-or-later** (see [LICENSE](LICENSE)).
 
 The Dolphin changes in `dolphin/patches/` modify [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later, Copyright the Dolphin Emulator Project). The corresponding source of every `Dolphin.exe` in a release is the upstream commit named in the release notes (`66d8a892203d76a1f7349ed07526089b828e3835` for the first release) plus the patches of this repository, which are attached to the release as well.

@@ -1,6 +1,8 @@
 # F-Zero AX LAN for Dolphin
 
-Run **F-Zero AX** (Triforce arcade board) on [Dolphin](https://dolphin-emu.org) with **linked cabinets** (VS mode over a LAN), **lamp outputs** and **force feedback**.
+Run **F-Zero AX** (Triforce arcade board) on a modified [Dolphin](https://dolphin-emu.org) with **linked cabinets** (VS mode over a LAN), **lamp outputs** and **force feedback**.
+
+> **Unofficial modified Dolphin.** The `Dolphin.exe` in the releases is a **modified, unofficial build of [Dolphin](https://dolphin-emu.org)** (GPL-2.0-or-later): upstream commit `66d8a892203d76a1f7349ed07526089b828e3835` plus the patches in [`dolphin/patches/`](dolphin/patches/). It is not made, supported or endorsed by the Dolphin Emulator Project: **do not report problems with this build to them**, open an issue here instead. Please do not use it for netplay or anything else that expects an official build.
 
 ## TL;DR
 
