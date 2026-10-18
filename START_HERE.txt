@@ -1,0 +1,34 @@
+F-ZERO AX LAN FOR DOLPHIN - TL;DR
+=================================
+
+You need: your own "F-Zero AX (Japan) (Rev E)" ISO, and two or more Windows 10/11 PCs on the same network.
+(No game and no firmware are included in this download.)
+
+1. Unzip this folder on EACH PC (same contents everywhere, same Dolphin.exe).
+
+2. Copy your ISO into the Game folder.
+
+3. Run FZero_LAN_Patcher.exe on each PC:
+   - "This cabinet is"   : Cabinet 1 on PC 1, Cabinet 2 on PC 2, ...
+   - "Number of cabinets": how many PCs you link.
+   - Real IP of each cabinet: type the address of each PC (find it with "ipconfig").
+   - Click APPLY, then "Dolphin firewall" (once per PC, accept the prompt), then "Launch game".
+
+4. First start: calibrate with Left/Right arrows (wheel), W (accelerator), Q (brake), then Enter.
+
+5. On the "CHECKING NETWORK" screen:
+   - "1 OK" and "2 OK"  = the cabinets see each other, you are linked.
+   - "NG"               = check the IPs, the firewall button, that BOTH PCs did APPLY with different
+                          cabinet numbers, and that both use the same Dolphin.exe.
+
+Keys: Left/Right = wheel, W = accelerator, Q = brake, X = boost, C / V = paddles, Enter = Start,
+      H / F / R / G = views 1-4, T = Test menu, S = Service, 1 = Coin.
+
+OPTIONAL - force feedback (vJoy + BackForceFeeder, or a DirectInput USB wheel):
+   - In the patcher, UNCHECK "Bypass the motor check", click APPLY (the "Motor Initializing" screen then takes ~45 s).
+   - Run FFB\FFB_Settings.exe, pick a preset (start with "Soft"), start a race and use the test buttons.
+
+OPTIONAL - lamps with BackForceFeeder:
+   - In its control set editor: Exec. process name = Dolphin, Output type = MAME_NET.
+
+Something wrong? See README.md and the docs folder (docs\LINK.md for the link, docs\FFB.md for force feedback).

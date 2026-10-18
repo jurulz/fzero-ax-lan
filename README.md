@@ -2,6 +2,19 @@
 
 Run **F-Zero AX** (Triforce arcade board) on [Dolphin](https://dolphin-emu.org) with **linked cabinets** (VS mode over a LAN), **lamp outputs** and **force feedback**.
 
+## TL;DR
+
+You need your own *F-Zero AX (Japan) (Rev E)* ISO and two or more Windows PCs on the same network.
+
+1. Download the release zip and unzip it on **each** PC.
+2. Copy your ISO into `Game\`.
+3. Run `FZero_LAN_Patcher.exe` on each PC: pick *This cabinet is* (1 on the first PC, 2 on the second...), the number of cabinets and the real IP of each one, then **APPLY**, **Dolphin firewall** (once) and **Launch game**.
+4. On the *CHECKING NETWORK* screen, `1 OK` and `2 OK` mean you are linked.
+
+Force feedback and lamps are optional: see [START_HERE.txt](START_HERE.txt) (one page) or the sections below.
+
+## What's here
+
 This repository contains:
 
 | Folder | What it is |
