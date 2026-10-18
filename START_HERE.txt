@@ -29,6 +29,9 @@ Which ISO? Exactly this one, uncompressed (.iso or .gcm), BEFORE patching it:
    - "NG"               = check the IPs, the firewall button, that BOTH PCs did APPLY with different
                           cabinet numbers, and that both use the same Dolphin.exe.
 
+Test / service menu (optional): needs YOUR OWN segaboot.gcm in Dolphin-FZero\User\Triforce\ (not included).
+   Without it everything else works; only the test menu (T key) is unavailable.
+
 Keys: Left/Right = wheel, W = accelerator, Q = brake, X = boost, C / V = paddles, Enter = Start,
       H / F / R / G = views 1-4, T = Test menu, S = Service, 1 = Coin.
 

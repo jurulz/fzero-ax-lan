@@ -13,6 +13,8 @@ You need your own **F-Zero AX (Japan) (Rev E)** ISO (game ID `GFZJ8P`, SHA-1 `73
 3. Run `FZero_LAN_Patcher.exe` on each PC: pick *This cabinet is* (1 on the first PC, 2 on the second...), the number of cabinets and the real IP of each one, then **APPLY**, **Dolphin firewall** (once) and **Launch game**.
 4. On the *CHECKING NETWORK* screen, `1 OK` and `2 OK` mean you are linked.
 
+The test / service menu (key `T`) is optional and needs your own `segaboot.gcm` in `Dolphin-FZero\User\Triforce\` (see [below](#optional-the-test--service-menu-segabootgcm)). Everything else works without it.
+
 Force feedback and lamps are optional: see [START_HERE.txt](START_HERE.txt) (one page) or the sections below.
 
 ## What's here
@@ -47,6 +49,12 @@ Exactly this dump (uncompressed `.iso` / `.gcm`), **before** you patch it:
 Check it with `Get-FileHash -Algorithm SHA1 "F-Zero AX (Japan) (Rev E).iso"` in PowerShell. These hashes are those of the **original** file: APPLY modifies the ISO in place (a copy of the original `main.dol` is kept next to it), so its hash changes afterwards.
 
 Other revisions or variants are **not supported** and the patcher refuses them (it checks the game ID, the `main.dol` size and the code around every patched place). Compressed images (RVZ, WIA, GCZ, CISO) must be converted to ISO first (Dolphin: right-click the game > Properties > Convert File). An extracted folder (`sys\` and `files\`) of the same version also works.
+
+## Optional: the test / service menu (`segaboot.gcm`)
+
+The cabinet's test and service menus are provided by the Triforce boot firmware, `segaboot.gcm`. It is **not included and not distributed here**: you must supply your own copy and put it in `Dolphin-FZero\User\Triforce\segaboot.gcm` (the release zip has a placeholder file in that folder). Then press `T` once the game is loaded (the patcher's hybrid mapping lets you use the keyboard for it).
+
+Without it the game itself, the link, the lamps and force feedback are not affected; only the test / service menus are unavailable (the patcher logs a hint when the file is missing).
 
 ## Status
 
