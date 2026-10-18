@@ -11,7 +11,7 @@ An **unofficial, modified build** of [Dolphin](https://github.com/dolphin-emu/do
 
 | Release | Dolphin source commit (branch `fzero-ax-lan`) | Patches |
 |---|---|---|
-| 0.9.0 | `7921bb4` (tag `fzero-ax-lan-v0.9.0`) | 0001-0006 |
+| 0.9.0 | `5ce6679` (tag `fzero-ax-lan-v0.9.0`) | 0001-0006 |
 
 How to build it, step by step: [docs/BUILD.md](docs/BUILD.md). The version text that the binary shows in its window title may name another commit than the table (it is the commit that was current when CMake was last configured); the table is the reference.
 

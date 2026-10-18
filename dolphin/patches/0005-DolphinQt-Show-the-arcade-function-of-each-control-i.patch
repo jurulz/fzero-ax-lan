@@ -1,6 +1,6 @@
-From 964a4224f46fc5a52b7de1700837dcaa8e959ced Mon Sep 17 00:00:00 2001
-From: FZero AX LAN <noreply@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 14:25:16 -0400
+From 9bcd0dcf701c89bf77311301263cc383cd4cc94a Mon Sep 17 00:00:00 2001
+From: jurulz <60669313+jurulz@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:20:24 -0400
 Subject: [PATCH 5/6] DolphinQt: Show the arcade function of each control in
  the Triforce pad window
 

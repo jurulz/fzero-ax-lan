@@ -1,6 +1,6 @@
-From 1389672abce62d02a0cc2f3a7a357ae2baadbd77 Mon Sep 17 00:00:00 2001
-From: FZero AX LAN <noreply@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 14:25:15 -0400
+From 517d0f64ac1fb702cd85eefbf73bdd849dd07012 Mon Sep 17 00:00:00 2001
+From: jurulz <60669313+jurulz@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:20:22 -0400
 Subject: [PATCH 1/6] Common: Fix GetLocalTimeSinceJan1970 on Windows 10 before
  1903
 

@@ -1,6 +1,6 @@
-From 3312947e94551dfd3206ab70097843df945c304a Mon Sep 17 00:00:00 2001
-From: FZero AX LAN <noreply@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 14:25:15 -0400
+From 3149c2984c5bb76c8fec574dec9d155cd1e42358 Mon Sep 17 00:00:00 2001
+From: jurulz <60669313+jurulz@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:20:23 -0400
 Subject: [PATCH 2/6] DiscIO: Keep the recorded DOL offset of arcade games in
  DirectoryBlob
 

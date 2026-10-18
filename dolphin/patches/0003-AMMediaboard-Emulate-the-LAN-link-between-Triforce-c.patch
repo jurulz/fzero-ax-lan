@@ -1,6 +1,6 @@
-From 3d489c18810b3e516ca00530946510e3024aedf3 Mon Sep 17 00:00:00 2001
-From: FZero AX LAN <noreply@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 14:25:16 -0400
+From dfa17d70bdb61fbbb3227da6bca9eb0a623ef205 Mon Sep 17 00:00:00 2001
+From: jurulz <60669313+jurulz@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:20:23 -0400
 Subject: [PATCH 3/6] AMMediaboard: Emulate the LAN link between Triforce
  cabinets over UDP
 

@@ -1,6 +1,6 @@
-From 7921bb44f27a02b5a1bd91a86843cbed91a0827a Mon Sep 17 00:00:00 2001
-From: FZero AX LAN <noreply@users.noreply.github.com>
-Date: Fri, 16 Oct 2026 14:25:17 -0400
+From 5ce6679bb534279bd9c5c6c4654597a5046afd0f Mon Sep 17 00:00:00 2001
+From: jurulz <60669313+jurulz@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:20:24 -0400
 Subject: [PATCH 6/6] DolphinQt: Write crash_report.txt with a module+offset
  call stack on Windows
 
