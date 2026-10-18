@@ -1,0 +1,45 @@
+﻿F-ZERO AX LAN POUR DOLPHIN - EN BREF
+====================================
+
+Ce paquet contient un build NON OFFICIEL et modifié de Dolphin (voir README.fr.md) : ne signalez pas de problèmes à l'équipe Dolphin.
+
+Il vous faut : votre propre ISO "F-Zero AX (Japan) (Rev E)", et deux PC Windows 10/11 ou plus sur le même réseau.
+(Aucun jeu et aucun firmware ne sont inclus dans ce téléchargement.)
+
+Quelle ISO ? Exactement celle-ci, non compressée (.iso ou .gcm), AVANT de la patcher :
+   F-Zero AX (Japan) (Rev E)   ID du jeu GFZJ8P   435 995 904 octets
+   SHA-1  73f3ddec23c85bc65ae51ed2ce8973231dadaeb1
+   (vérification : PowerShell > Get-FileHash -Algorithm SHA1 "F-Zero AX (Japan) (Rev E).iso")
+   Les autres révisions sont refusées par le patcher. Les fichiers RVZ/WIA/GCZ doivent d'abord être convertis en ISO.
+
+1. Décompressez ce dossier sur CHAQUE PC (même contenu partout, même Dolphin.exe).
+
+2. Copiez votre ISO dans le dossier Game.
+
+3. Lancez FZero_LAN_Patcher.exe sur chaque PC (la fenêtre est en anglais) :
+   - "This cabinet is"    : Cabinet 1 sur le PC 1, Cabinet 2 sur le PC 2, ...
+   - "Number of cabinets" : le nombre de PC que vous reliez.
+   - Real IP of each cabinet : l'adresse de chaque PC (trouvez-la avec "ipconfig").
+   - Cliquez APPLY, puis "Dolphin firewall" (une fois par PC, acceptez la demande), puis "Launch game".
+
+4. Premier démarrage : calibrez avec les flèches gauche/droite (volant), W (accélérateur), Q (frein), puis Entrée.
+
+5. Sur l'écran "CHECKING NETWORK" :
+   - "1 OK" et "2 OK" = les bornes se voient, vous êtes liés.
+   - "NG"             = vérifiez les adresses IP, le bouton pare-feu, que les DEUX PC ont fait APPLY avec des
+                        numéros de borne différents, et qu'ils utilisent le même Dolphin.exe.
+
+Menu test / service (facultatif) : demande VOTRE PROPRE segaboot.gcm dans Dolphin-FZero\User\Triforce\ (non inclus).
+   Sans lui, tout le reste fonctionne ; seul le menu test (touche T) est indisponible.
+
+Touches : Gauche/Droite = volant, W = accélérateur, Q = frein, X = boost, C / V = palettes, Entrée = Start,
+          H / F / R / G = vues 1-4, T = menu test, S = service, 1 = pièce.
+
+FACULTATIF - retour de force (vJoy + BackForceFeeder, ou volant USB DirectInput) :
+   - Dans le patcher, DÉCOCHEZ "Bypass the motor check", cliquez APPLY (l'écran "Motor Initializing" dure alors ~45 s).
+   - Lancez FFB\FFB_Settings.exe, choisissez un préréglage (commencez par "Soft"), lancez une course et utilisez les boutons de test.
+
+FACULTATIF - lampes avec BackForceFeeder :
+   - Dans son éditeur de control set : Exec. process name = Dolphin, Output type = MAME_NET.
+
+Un problème ? Voir README.fr.md et le dossier docs (docs\LINK.md pour la liaison, docs\FFB.md pour le retour de force ; en anglais).
