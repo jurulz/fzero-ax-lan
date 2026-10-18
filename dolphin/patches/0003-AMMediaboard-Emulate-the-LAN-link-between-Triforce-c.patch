@@ -1,0 +1,483 @@
+From 3d489c18810b3e516ca00530946510e3024aedf3 Mon Sep 17 00:00:00 2001
+From: FZero AX LAN <noreply@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:25:16 -0400
+Subject: [PATCH 3/6] AMMediaboard: Emulate the LAN link between Triforce
+ cabinets over UDP
+
+F-Zero AX keeps one 0x5A0-byte link block per cabinet in the media board memory and expects the firmware to mirror every cabinet's block to the others. Open a UDP socket on the port the game configures (58505 for F-Zero AX), send our own block to the other units on every SearchDevices command and copy the blocks received from the other units into the link memory. Addresses go through the existing IP address redirection table (Dolphin.ini [Core] TriforceIPRedirections), so real addresses can be mapped to the 192.168.11.x ones the game uses.
+---
+ Source/Core/Core/HW/DVD/AMMediaboard.cpp | 396 ++++++++++++++++++++++-
+ 1 file changed, 391 insertions(+), 5 deletions(-)
+
+diff --git a/Source/Core/Core/HW/DVD/AMMediaboard.cpp b/Source/Core/Core/HW/DVD/AMMediaboard.cpp
+index e20698e..bb3081c 100644
+--- a/Source/Core/Core/HW/DVD/AMMediaboard.cpp
++++ b/Source/Core/Core/HW/DVD/AMMediaboard.cpp
+@@ -4,10 +4,13 @@
+ #include "Core/HW/DVD/AMMediaboard.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <bit>
+ #include <random>
+ #include <string>
++#include <thread>
+ #include <unordered_map>
++#include <vector>
+ 
+ #include <fmt/format.h>
+ 
+@@ -966,6 +969,199 @@ static u32 NetDIMMBind(GuestSocket guest_socket, const GuestSocketAddress& guest
+   return bind_result;
+ }
+ 
++// ---------------------------------------------------------------------------------------------
++// Cabinet link emulation (F-Zero AX, Mario Kart GP...).
++// On real hardware the media board firmware keeps an array of fixed-size blocks in the "link RAM"
++// (NetworkBufferAddress2). Block N belongs to cabinet N and lives at N * block_size. The game
++// writes its own block and reads the others; the firmware mirrors every cabinet's block to all
++// the other cabinets over UDP. SearchDevices is issued by the game once per frame.
++// Here the blocks are mirrored by UDP datagrams addressed to the peers of the IP redirection table
++// (emulated 192.168.11.x -> real IP).
++// ---------------------------------------------------------------------------------------------
++static constexpr u32 LINK_RAM_BASE = NetworkBufferAddress2;
++static constexpr u32 LINK_DEFAULT_BLOCK_SIZE = 0x5a0;
++static constexpr u32 LINK_MAX_BLOCK_SIZE = 0x1000;
++static constexpr u16 LINK_DEFAULT_PORT = 58505;
++static constexpr u32 LINK_MAGIC = 0x4B4C5A46;  // "FZLK"
++static constexpr u32 LINK_HEADER_SIZE = 8;
++static constexpr u32 LINK_UNITS_PER_GROUP = 4;
++
++static u32 s_link_block_size = LINK_DEFAULT_BLOCK_SIZE;
++static u16 s_link_port = LINK_DEFAULT_PORT;
++static u32 s_link_num = LINK_UNITS_PER_GROUP;
++static SOCKET s_link_socket = INVALID_SOCKET;
++static std::thread s_link_thread;
++static std::atomic<bool> s_link_running{false};
++static std::atomic<u32> s_link_my_unit{0};
++static std::atomic<u32> s_link_tx{0};
++static std::atomic<u32> s_link_rx{0};
++
++static u32 LinkOwnUnit()
++{
++  // The game announces its own address (192.168.11.(number + group * 4 + 1)) with ModifyMyIPaddr.
++  const u32 last = s_game_modified_ip_address[3];
++  return last > 0 ? ((last - 1) % LINK_UNITS_PER_GROUP) : 0;
++}
++
++static void LinkHandlePacket(const u8* data, int size, const sockaddr_in& from)
++{
++  if (size < int(LINK_HEADER_SIZE))
++    return;
++  if (Common::BitCastPtr<u32>(data) != LINK_MAGIC)
++    return;
++
++  const u32 unit = data[4];
++  const u32 block_size = Common::BitCastPtr<u16>(data + 6);
++  if (unit >= LINK_UNITS_PER_GROUP || block_size == 0 || block_size > LINK_MAX_BLOCK_SIZE ||
++      int(LINK_HEADER_SIZE + block_size) != size || unit == s_link_my_unit.load())
++  {
++    return;
++  }
++
++  const auto dst = GetSpanForMediaboardAddress(LINK_RAM_BASE + unit * block_size);
++  if (dst.size() < block_size)
++    return;
++
++  std::memcpy(dst.data(), data + LINK_HEADER_SIZE, block_size);
++
++  const u32 count = ++s_link_rx;
++  if (count <= 3 || count % 1200 == 0)
++  {
++    INFO_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link RX #{}: unit {} ({} bytes) from {}", count, unit,
++                 block_size,
++                 Common::IPAddressToString(std::bit_cast<Common::IPAddress>(from.sin_addr)));
++  }
++}
++
++static bool LinkStart()
++{
++  if (s_link_running)
++    return true;
++
++  const SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++  if (sock == INVALID_SOCKET)
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link: socket() failed: {}", Common::StrNetworkError());
++    return false;
++  }
++
++  const int reuse = 1;
++  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
++#ifdef _WIN32
++  const int timeout_ms = 100;
++  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
++             sizeof(timeout_ms));
++#else
++  const timeval timeout{.tv_sec = 0, .tv_usec = 100000};
++  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
++             sizeof(timeout));
++#endif
++
++  sockaddr_in addr{};
++  addr.sin_family = AF_INET;
++  addr.sin_port = htons(s_link_port);
++  addr.sin_addr.s_addr = htonl(INADDR_ANY);
++  if (bind(sock, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0)
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link: bind(port {}) failed: {}", s_link_port,
++                  Common::StrNetworkError());
++    closesocket(sock);
++    return false;
++  }
++
++  s_link_socket = sock;
++  s_link_running = true;
++  s_link_thread = std::thread([sock] {
++    std::vector<u8> buffer(LINK_HEADER_SIZE + LINK_MAX_BLOCK_SIZE + 16);
++    while (s_link_running)
++    {
++      sockaddr_in from{};
++      socklen_t from_len = sizeof(from);
++      const int n = recvfrom(sock, reinterpret_cast<char*>(buffer.data()), int(buffer.size()), 0,
++                             reinterpret_cast<sockaddr*>(&from), &from_len);
++      if (n > 0)
++        LinkHandlePacket(buffer.data(), n, from);
++    }
++  });
++
++  NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link: listening on UDP port {}", s_link_port);
++  return true;
++}
++
++static void LinkStop()
++{
++  if (!s_link_running)
++    return;
++
++  s_link_running = false;
++  if (s_link_socket != INVALID_SOCKET)
++  {
++    closesocket(s_link_socket);
++    s_link_socket = INVALID_SOCKET;
++  }
++  if (s_link_thread.joinable())
++    s_link_thread.join();
++}
++
++// Called for every SearchDevices command: send our own block to every other cabinet.
++static void LinkSendOwnBlock()
++{
++  if (!LinkStart())
++    return;
++
++  const u32 unit = LinkOwnUnit();
++  s_link_my_unit = unit;
++  const u32 block_size = s_link_block_size;
++
++  const auto block = GetSpanForMediaboardAddress(LINK_RAM_BASE + unit * block_size);
++  if (block.size() < block_size)
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link: bad block for unit {}", unit);
++    return;
++  }
++
++  std::vector<u8> packet(LINK_HEADER_SIZE + block_size);
++  Common::BitCastPtr<u32>(packet.data()) = LINK_MAGIC;
++  packet[4] = u8(unit);
++  packet[5] = u8(LINK_UNITS_PER_GROUP);
++  Common::BitCastPtr<u16>(packet.data() + 6) = u16(block_size);
++  std::memcpy(packet.data() + LINK_HEADER_SIZE, block.data(), block_size);
++
++  const u32 my_last = s_game_modified_ip_address[3];
++  const u32 group_base = ((my_last > 0 ? my_last - 1 : 0) / LINK_UNITS_PER_GROUP) *
++                         LINK_UNITS_PER_GROUP;
++
++  u32 sent = 0;
++  for (u32 other = 0; other < s_link_num; ++other)
++  {
++    if (other == unit)
++      continue;
++
++    const Common::IPv4Port emulated{Common::IPAddress{192, 168, 11, u8(group_base + other + 1)},
++                                    htons(s_link_port)};
++    const auto real = AdjustIPv4PortFromConfig(emulated);
++    if (!real.has_value())
++      continue;
++
++    sockaddr_in to{};
++    to.sin_family = AF_INET;
++    to.sin_port = real->port;
++    to.sin_addr = std::bit_cast<in_addr>(real->ip_address);
++    if (sendto(s_link_socket, reinterpret_cast<const char*>(packet.data()), int(packet.size()), 0,
++               reinterpret_cast<const sockaddr*>(&to), sizeof(to)) >= 0)
++    {
++      ++sent;
++    }
++  }
++
++  const u32 count = ++s_link_tx;
++  if (count <= 3 || count % 1200 == 0)
++  {
++    INFO_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: link TX #{}: unit {} -> {} peer(s), block {} bytes",
++                 count, unit, sent, block_size);
++  }
++}
++
+ static void AMMBCommandRecv(u32 parameter_offset)
+ {
+   const auto fd = GetHostSocket(GuestSocket(s_media_buffer_32[parameter_offset]));
+@@ -1038,6 +1234,168 @@ static void AMMBCommandSend(u32 parameter_offset)
+   s_media_buffer_32[1] = ret;
+ }
+ 
++static void AMMBCommandSendTo(u32 parameter_offset)
++{
++  // Layout (observed in F-Zero AX's wrapper): socket, data offset, length, flags,
++  //  destination address offset, destination address length.
++  const auto guest_socket = GuestSocket(s_media_buffer_32[parameter_offset]);
++  const auto fd = GetHostSocket(guest_socket);
++  const u32 off = s_media_buffer_32[parameter_offset + 1];
++  u32 len = s_media_buffer_32[parameter_offset + 2];
++  const u32 flags = s_media_buffer_32[parameter_offset + 3];
++  const u32 addr_off = s_media_buffer_32[parameter_offset + 4];
++  const u32 addr_len = s_media_buffer_32[parameter_offset + 5];
++
++  s_media_buffer[1] = s_media_buffer[8];
++  s_media_buffer_32[1] = u32(SOCKET_ERROR);
++
++  const auto data_span = GetSpanForMediaboardAddress(off);
++  if (data_span.size() < len)
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET,
++                  "AMMBCommandSendTo: Bad data offset or length: off={:08x} len={}", off, len);
++    len = 0;
++  }
++
++  GuestSocketAddress guest_addr;
++  const auto addr_span = GetSpanForMediaboardAddress(addr_off);
++  if (addr_len != sizeof(guest_addr) || addr_span.size() < sizeof(guest_addr))
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET,
++                  "AMMBCommandSendTo: Bad address offset or length: off={:08x} len={}", addr_off,
++                  addr_len);
++    s_last_error = SSC_EFAULT;
++    return;
++  }
++
++  std::memcpy(&guest_addr, addr_span.data(), sizeof(guest_addr));
++
++  sockaddr_in addr{
++      .sin_family = guest_addr.ip_family,
++      .sin_port = guest_addr.port,
++      .sin_addr = std::bit_cast<in_addr>(guest_addr.ip_address),
++  };
++
++  if (const auto adjusted = AdjustIPv4PortFromConfig({guest_addr.ip_address, guest_addr.port}))
++  {
++    addr.sin_addr = std::bit_cast<in_addr>(adjusted->ip_address);
++    addr.sin_port = adjusted->port;
++
++    INFO_LOG_FMT(AMMEDIABOARD_NET, "AMMBCommandSendTo: Redirecting to: {}:{}",
++                 Common::IPAddressToString(adjusted->ip_address), ntohs(adjusted->port));
++  }
++
++  // Games use broadcasts to discover other cabinets.
++  if (std::bit_cast<u32>(addr.sin_addr) == u32(INADDR_BROADCAST))
++  {
++    const int enable = 1;
++    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&enable),
++               sizeof(enable));
++  }
++
++  const int ret = sendto(fd, reinterpret_cast<const char*>(data_span.data()), len, SEND_FLAGS,
++                         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
++  const int err = WSAGetLastError();
++
++  if (ret < 0)
++  {
++    s_last_error = err == WSAEWOULDBLOCK ? u32(SSC_EWOULDBLOCK) : u32(SOCKET_ERROR);
++    ERROR_LOG_FMT(AMMEDIABOARD_NET,
++                  "GC-AM: sendto( {}({}), 0x{:08x}, {}, 0x{:x}, {}:{} ) failed with error {}: {}",
++                  fd, u32(guest_socket), off, len, flags,
++                  Common::IPAddressToString(std::bit_cast<Common::IPAddress>(addr.sin_addr)),
++                  ntohs(addr.sin_port), err, Common::DecodeNetworkError(err));
++  }
++  else
++  {
++    s_last_error = SSC_SUCCESS;
++    INFO_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: sendto( {}({}), 0x{:08x}, {}, 0x{:x}, {}:{} ): {}", fd,
++                  u32(guest_socket), off, len, flags,
++                  Common::IPAddressToString(std::bit_cast<Common::IPAddress>(addr.sin_addr)),
++                  ntohs(addr.sin_port), ret);
++  }
++
++  s_media_buffer_32[1] = u32(ret);
++}
++
++static void AMMBCommandRecvFrom(u32 parameter_offset)
++{
++  // Layout (observed in F-Zero AX's wrapper): socket, data offset, length, flags,
++  //  source address offset, source address length offset (u32 in/out).
++  const auto guest_socket = GuestSocket(s_media_buffer_32[parameter_offset]);
++  const auto fd = GetHostSocket(guest_socket);
++  const u32 off = s_media_buffer_32[parameter_offset + 1];
++  u32 len = s_media_buffer_32[parameter_offset + 2];
++  const u32 flags = s_media_buffer_32[parameter_offset + 3];
++  const u32 addr_off = s_media_buffer_32[parameter_offset + 4];
++  const u32 addrlen_off = s_media_buffer_32[parameter_offset + 5];
++
++  const auto data_span = GetSpanForMediaboardAddress(off);
++  if (data_span.size() < len)
++  {
++    ERROR_LOG_FMT(AMMEDIABOARD_NET,
++                  "AMMBCommandRecvFrom: Bad data offset or length: off={:08x} len={}", off, len);
++    len = 0;
++  }
++
++  sockaddr_in from{};
++  socklen_t from_len = sizeof(from);
++
++  // TODO: Might be blocking depending on the timeout (see SetTimeouts command).
++  const int ret = recvfrom(fd, reinterpret_cast<char*>(data_span.data()), len, 0,
++                           reinterpret_cast<sockaddr*>(&from), &from_len);
++  const int err = WSAGetLastError();
++
++  if (ret < 0)
++  {
++    s_last_error = err == WSAEWOULDBLOCK ? u32(SSC_EWOULDBLOCK) : u32(SOCKET_ERROR);
++
++    if (err != WSAEWOULDBLOCK)
++    {
++      ERROR_LOG_FMT(AMMEDIABOARD_NET,
++                    "GC-AM: recvfrom( {}({}), 0x{:08x}, {}, 0x{:x} ) failed with error {}: {}", fd,
++                    u32(guest_socket), off, len, flags, err, Common::DecodeNetworkError(err));
++    }
++  }
++  else
++  {
++    s_last_error = SSC_SUCCESS;
++
++    const auto addr_span = GetSpanForMediaboardAddress(addr_off);
++    const auto addrlen_span = GetSpanForMediaboardAddress(addrlen_off);
++
++    if (addr_off != 0 && addrlen_off != 0 && addrlen_span.size() >= sizeof(u32))
++    {
++      GuestSocketAddress guest_addr{
++          .ip_family = u8(from.sin_family),
++          .port = from.sin_port,
++          .ip_address = std::bit_cast<Common::IPAddress>(from.sin_addr),
++      };
++
++      if (const auto adjusted =
++              ReverseAdjustIPv4PortFromConfig({guest_addr.ip_address, guest_addr.port}))
++      {
++        guest_addr.ip_address = adjusted->ip_address;
++        guest_addr.port = adjusted->port;
++      }
++
++      const u32 write_size = std::min<u32>(
++          Common::BitCastPtr<u32>(addrlen_span.data()),
++          u32(std::min<std::size_t>(sizeof(guest_addr), addr_span.size())));
++      std::memcpy(addr_span.data(), &guest_addr, write_size);
++      Common::BitCastPtr<u32>(addrlen_span.data()) = sizeof(guest_addr);
++    }
++
++    INFO_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: recvfrom( {}({}), 0x{:08x}, {}, 0x{:x} ): {} from {}:{}",
++                  fd, u32(guest_socket), off, len, flags, ret,
++                  Common::IPAddressToString(std::bit_cast<Common::IPAddress>(from.sin_addr)),
++                  ntohs(from.sin_port));
++  }
++
++  s_media_buffer[1] = s_media_buffer[8];
++  s_media_buffer_32[1] = u32(ret);
++}
++
+ static void AMMBCommandSocket(u32 parameter_offset)
+ {
+   // Protocol is not sent (determined automatically).
+@@ -1703,6 +2061,12 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
+       case AMMBCommand::Send:
+         AMMBCommandSend(2);
+         break;
++      case AMMBCommand::Sendto:
++        AMMBCommandSendTo(2);
++        break;
++      case AMMBCommand::Recvfrom:
++        AMMBCommandRecvFrom(2);
++        break;
+       case AMMBCommand::Socket:
+         AMMBCommandSocket(2);
+         break;
+@@ -1848,6 +2212,11 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
+       ERROR_LOG_FMT(AMMEDIABOARD, "GC-AM: Invalid DIMM Disc read from: offset={}, length={}",
+                     offset, length);
+     }
++    else if (s_dimm_disc == nullptr)
++    {
++      ERROR_LOG_FMT(AMMEDIABOARD, "GC-AM: DIMM disc read before InitDIMM: offset={}, length={}",
++                    offset, length);
++    }
+     else if (s_dimm_disc->Read(offset, length, span.data()))
+     {
+       return 0;
+@@ -2187,9 +2556,18 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
+         const u16 port = Common::swap16(s_media_buffer[0x27] | s_media_buffer[0x26] << 8);
+         const u16 unknown = s_media_buffer[0x2D] | s_media_buffer[0x2C] << 8;
+ 
++        if (size >= 0x20 && size <= LINK_MAX_BLOCK_SIZE && size % 4 == 0)
++          s_link_block_size = size;
++        // `port` is the byte-swapped value (35300 for the game's 0xE489 = 58505).
++        if (Common::swap16(port) >= 1024)
++          s_link_port = Common::swap16(port);
++        if (s_media_buffer[0x28] >= 2 && s_media_buffer[0x28] <= LINK_UNITS_PER_GROUP)
++          s_link_num = s_media_buffer[0x28];
++
+         NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: SetupLink:");
+         NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:  Size: ({}) ", size);
+-        NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:  Port: ({})", port);
++        NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:  Port: ({}) -> link port {}", port,
++                       s_link_port);
+         NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:LinkNum:({:02x})", s_media_buffer[0x28]);
+         NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:        ({:02x})", s_media_buffer[0x2A]);
+         NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:        ({:04x})", unknown);
+@@ -2212,9 +2590,16 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
+         const u16 off = s_media_buffer[0x26] | s_media_buffer[0x27] << 8;
+         const u32 addr = s_media_buffer_32[10];
+ 
+-        NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: SearchDevices: ({})", unknown);
+-        NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:        Offset: ({:04x})", off);
+-        NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:                ({:08x})", addr);
++        static u32 s_search_calls = 0;
++        const bool verbose = s_search_calls++ < 3 || s_search_calls % 1200 == 0;
++        if (verbose)
++        {
++          NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: SearchDevices: ({})", unknown);
++          NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:        Offset: ({:04x})", off);
++          NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM:                ({:08x})", addr);
++        }
++
++        LinkSendOwnBlock();
+ 
+         const auto data_span = GetSpanForMediaboardAddress(off + addr);
+         if (data_span.size() < 0x20)
+@@ -2225,7 +2610,7 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
+ 
+         const u8* const data = data_span.data();
+ 
+-        for (u32 i = 0; i < 0x20; i += 0x10)
++        for (u32 i = 0; verbose && i < 0x20; i += 0x10)
+         {
+           const std::array<u32, 4> data_u32 = Common::BitCastPtr<std::array<u32, 4>>(data + i);
+           NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: {:08x} {:08x} {:08x} {:08x}", data_u32[0],
+@@ -2346,6 +2731,7 @@ void Shutdown()
+ 
+   s_dimm_disc.reset();
+ 
++  LinkStop();
+   CloseAllSockets();
+ }
+ 
+-- 
+2.54.0.windows.1
+

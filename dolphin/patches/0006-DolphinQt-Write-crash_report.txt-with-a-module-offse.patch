@@ -1,0 +1,185 @@
+From 7921bb44f27a02b5a1bd91a86843cbed91a0827a Mon Sep 17 00:00:00 2001
+From: FZero AX LAN <noreply@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:25:17 -0400
+Subject: [PATCH 6/6] DolphinQt: Write crash_report.txt with a module+offset
+ call stack on Windows
+
+Install an unhandled exception filter, terminate handler, SIGABRT handler and invalid parameter handler that append the faulting module and RVA call stack to crash_report.txt next to Dolphin.exe, so crashes on machines without a debugger can be resolved with the matching PDB.
+---
+ Source/Core/DolphinQt/Main.cpp | 146 +++++++++++++++++++++++++++++++++
+ 1 file changed, 146 insertions(+)
+
+diff --git a/Source/Core/DolphinQt/Main.cpp b/Source/Core/DolphinQt/Main.cpp
+index 7f8f9b9..33087d1 100644
+--- a/Source/Core/DolphinQt/Main.cpp
++++ b/Source/Core/DolphinQt/Main.cpp
+@@ -2,7 +2,12 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #ifdef _WIN32
++#include <csignal>
+ #include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cwchar>
++#include <exception>
+ #include <string>
+ #include <vector>
+ 
+@@ -113,12 +118,153 @@ static bool QtMsgAlertHandler(const char* caption, const char* text, bool yes_no
+   return false;
+ }
+ 
++#if defined(_WIN32) && defined(_M_X64)
++// Cabinet PCs are remote and Windows keeps no usable crash information on them, so an unhandled
++// exception, std::terminate or abort() appends the fault location and a call stack to
++// crash_report.txt (next to Dolphin.exe). Addresses are printed as module+RVA.
++namespace
++{
++void CrashReportLine(HANDLE file, void* address)
++{
++  char line[400];
++  HMODULE module = nullptr;
++  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                         static_cast<LPCWSTR>(address), &module))
++  {
++    wchar_t path[MAX_PATH] = {};
++    GetModuleFileNameW(module, path, MAX_PATH);
++    const wchar_t* name = wcsrchr(path, L'\\');
++    name = name ? name + 1 : path;
++    snprintf(line, sizeof(line), "  %ls+0x%llX\r\n", name,
++             static_cast<unsigned long long>(static_cast<char*>(address) -
++                                             reinterpret_cast<char*>(module)));
++  }
++  else
++  {
++    snprintf(line, sizeof(line), "  %p (unknown module)\r\n", address);
++  }
++  DWORD written = 0;
++  WriteFile(file, line, static_cast<DWORD>(strlen(line)), &written, nullptr);
++}
++
++void WriteCrashReport(const char* kind, const EXCEPTION_POINTERS* info)
++{
++  static volatile LONG s_busy = 0;
++  if (InterlockedExchange(&s_busy, 1) != 0)
++    return;
++
++  wchar_t report_path[MAX_PATH] = {};
++  GetModuleFileNameW(nullptr, report_path, MAX_PATH);
++  if (wchar_t* slash = wcsrchr(report_path, L'\\'))
++    slash[1] = 0;
++  wcscat_s(report_path, L"crash_report.txt");
++
++  const HANDLE file = CreateFileW(report_path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
++                                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++  if (file != INVALID_HANDLE_VALUE)
++  {
++    SYSTEMTIME now;
++    GetLocalTime(&now);
++
++    char header[300];
++    int length = snprintf(header, sizeof(header),
++                          "=== %04d-%02d-%02d %02d:%02d:%02d  %s  thread %lu\r\n", now.wYear,
++                          now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, kind,
++                          GetCurrentThreadId());
++    if (info && info->ExceptionRecord)
++    {
++      const EXCEPTION_RECORD& rec = *info->ExceptionRecord;
++      length += snprintf(header + length, sizeof(header) - length, "code 0x%08lX", rec.ExceptionCode);
++      if (rec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec.NumberParameters >= 2)
++      {
++        length += snprintf(header + length, sizeof(header) - length, "  %s address 0x%llX",
++                           rec.ExceptionInformation[0] == 0   ? "read" :
++                           rec.ExceptionInformation[0] == 1   ? "write" :
++                                                                "execute",
++                           static_cast<unsigned long long>(rec.ExceptionInformation[1]));
++      }
++      length += snprintf(header + length, sizeof(header) - length, "\r\n");
++    }
++    DWORD written = 0;
++    WriteFile(file, header, static_cast<DWORD>(length), &written, nullptr);
++
++    CONTEXT context;
++    if (info && info->ContextRecord)
++      context = *info->ContextRecord;
++    else
++      RtlCaptureContext(&context);
++
++    for (int frame = 0; frame < 48 && context.Rip != 0; ++frame)
++    {
++      CrashReportLine(file, reinterpret_cast<void*>(context.Rip));
++
++      DWORD64 image_base = 0;
++      PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
++      if (function)
++      {
++        void* handler_data = nullptr;
++        DWORD64 establisher = 0;
++        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
++                         &handler_data, &establisher, nullptr);
++      }
++      else
++      {
++        context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
++        context.Rsp += 8;
++      }
++    }
++
++    WriteFile(file, "\r\n", 2, &written, nullptr);
++    CloseHandle(file);
++  }
++
++  InterlockedExchange(&s_busy, 0);
++}
++
++LONG WINAPI CrashUnhandledException(EXCEPTION_POINTERS* info)
++{
++  WriteCrashReport("unhandled exception", info);
++  return EXCEPTION_CONTINUE_SEARCH;
++}
++
++void CrashTerminate()
++{
++  WriteCrashReport("std::terminate", nullptr);
++  std::abort();
++}
++
++void CrashAbortSignal(int)
++{
++  WriteCrashReport("abort", nullptr);
++}
++
++void CrashInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t)
++{
++  WriteCrashReport("invalid CRT parameter", nullptr);
++  std::abort();
++}
++
++void InstallCrashReporter()
++{
++  SetUnhandledExceptionFilter(CrashUnhandledException);
++  std::set_terminate(CrashTerminate);
++  std::signal(SIGABRT, CrashAbortSignal);
++  _set_invalid_parameter_handler(CrashInvalidParameter);
++}
++}  // namespace
++#endif
++
+ #ifdef _WIN32
+ #define main app_main
+ #endif
+ 
+ int main(int argc, char* argv[])
+ {
++#if defined(_WIN32) && defined(_M_X64)
++  InstallCrashReporter();
++#endif
++
+ #ifdef _WIN32
+   const HANDLE stdout_handle = ::GetStdHandle(STD_OUTPUT_HANDLE);
+   const HANDLE stderr_handle = ::GetStdHandle(STD_ERROR_HANDLE);
+-- 
+2.54.0.windows.1
+

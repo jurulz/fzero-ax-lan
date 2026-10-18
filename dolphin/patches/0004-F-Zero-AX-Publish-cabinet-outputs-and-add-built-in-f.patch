@@ -1,0 +1,921 @@
+From 737b88989eebe3c00ba3d8ad583397e15227b179 Mon Sep 17 00:00:00 2001
+From: FZero AX LAN <noreply@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 14:25:16 -0400
+Subject: [PATCH 4/6] F-Zero AX: Publish cabinet outputs and add built-in force
+ feedback
+
+NetworkOutputs: serve the MAME/Flycast style network outputs protocol on 127.0.0.1:8000 (UDP announce on 8001) with the lamps (LampStart, LampView1-4, LampBoost/LampLeader), mamerun, WheelServo, WheelInit and every wheel command (WheelCmd<N>, WheelCnt<N>), so cabinet software such as BackForceFeeder can use them. WheelForceFeedback: a thread that computes a force from the target position requested by the game and the real wheel position (Control Stick X of pad 1) and sends it to the Constant output of a force-feedback device through the controller interface. Settings are reloaded from User/Config/FZeroFFB.ini; orders and state go through FZeroFFB_cmd.txt and FZeroFFB_status.txt. Disabled unless enabled = 1.
+---
+ Source/Core/Core/HW/Triforce/FZeroAX.cpp | 777 +++++++++++++++++++++++
+ Source/Core/Core/HW/Triforce/FZeroAX.h   |  43 +-
+ 2 files changed, 816 insertions(+), 4 deletions(-)
+
+diff --git a/Source/Core/Core/HW/Triforce/FZeroAX.cpp b/Source/Core/Core/HW/Triforce/FZeroAX.cpp
+index dde1068..7771013 100644
+--- a/Source/Core/Core/HW/Triforce/FZeroAX.cpp
++++ b/Source/Core/Core/HW/Triforce/FZeroAX.cpp
+@@ -3,22 +3,714 @@
+ 
+ #include "Core/HW/Triforce/FZeroAX.h"
+ 
++#include <algorithm>
++#include <atomic>
++#include <cctype>
++#include <charconv>
++#include <chrono>
++#include <cmath>
++#include <filesystem>
++#include <fstream>
++#include <map>
++#include <mutex>
+ #include <numeric>
++#include <string>
++#include <thread>
++#include <vector>
+ 
++#ifndef _WIN32
++#include <fcntl.h>
++#endif
++
++#include <fmt/format.h>
+ #include <fmt/ranges.h>
+ 
+ #include "Common/BitUtils.h"
+ #include "Common/ChunkFile.h"
++#include "Common/FileUtil.h"
++#include "Common/IniFile.h"
+ #include "Common/Logging/Log.h"
++#include "Common/StringUtil.h"
+ #include "Common/Swap.h"
++#include "Common/Thread.h"
+ 
++#include "Core/HW/DVD/AMMediaboard.h"
+ #include "Core/HW/GCPad.h"
++#include "Core/IOS/Network/Socket.h"
+ 
++#include "InputCommon/ControllerEmu/ControllerEmu.h"
++#include "InputCommon/ControllerInterface/ControllerInterface.h"
++#include "InputCommon/ControllerInterface/CoreDevice.h"
+ #include "InputCommon/GCPadStatus.h"
++#include "InputCommon/InputConfig.h"
+ 
+ namespace Triforce
+ {
+ 
++// Minimal server for the "network outputs" protocol used by MAME and Flycast, which
++// BackForceFeeder (and similar cabinet software) reads:
++//  - UDP datagram to 127.0.0.1:<udp_port>:  "mame_start = <game>\rtcp = <tcp_port>\r"
++//    (repeated every second while nobody is connected, so a client started later still finds us)
++//  - TCP server on 127.0.0.1:<tcp_port>. A new client first receives "mame_start = <game>" and the
++//    current value of every output, then "<name> = <value>" on every change. Lines end with CR+LF
++//    (a lone CR makes .NET's StreamReader.ReadLine wait for the next byte before returning).
++// Settings (Dolphin.ini, [Core]): TriforceOutputs (default true), TriforceOutputsTcpPort (8000),
++// TriforceOutputsUdpPort (8001, 0 = no UDP announcement).
++class NetworkOutputs
++{
++public:
++  NetworkOutputs(std::string game, u16 tcp_port, u16 udp_port)
++      : m_game(std::move(game)), m_tcp_port(tcp_port), m_udp_port(udp_port)
++  {
++    m_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    if (m_listener == INVALID_SOCKET)
++    {
++      WARN_LOG_FMT(SERIALINTERFACE_JVSIO, "NetworkOutputs: socket() failed");
++      return;
++    }
++
++    const int reuse = 1;
++    setsockopt(m_listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse),
++               sizeof(reuse));
++
++    sockaddr_in addr{};
++    addr.sin_family = AF_INET;
++    addr.sin_port = htons(m_tcp_port);
++    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    if (bind(m_listener, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0 ||
++        listen(m_listener, 4) != 0)
++    {
++      WARN_LOG_FMT(SERIALINTERFACE_JVSIO, "NetworkOutputs: cannot listen on 127.0.0.1:{}",
++                   m_tcp_port);
++      closesocket(m_listener);
++      m_listener = INVALID_SOCKET;
++      return;
++    }
++
++    if (m_udp_port != 0)
++      m_udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++
++    m_running = true;
++    m_thread = std::thread([this] { Run(); });
++    NOTICE_LOG_FMT(SERIALINTERFACE_JVSIO, "NetworkOutputs: serving '{}' on 127.0.0.1:{} (UDP {})",
++                   m_game, m_tcp_port, m_udp_port);
++  }
++
++  ~NetworkOutputs()
++  {
++    if (m_running)
++    {
++      Set("mamerun", 0);
++      m_running = false;
++      m_thread.join();
++    }
++    if (m_listener != INVALID_SOCKET)
++      closesocket(m_listener);
++    if (m_udp != INVALID_SOCKET)
++      closesocket(m_udp);
++    for (const SOCKET client : m_clients)
++      closesocket(client);
++  }
++
++  NetworkOutputs(const NetworkOutputs&) = delete;
++  NetworkOutputs& operator=(const NetworkOutputs&) = delete;
++
++  void Set(const std::string& name, int value)
++  {
++    std::lock_guard lock{m_mutex};
++    const auto [it, inserted] = m_values.try_emplace(name, value);
++    if (!inserted)
++    {
++      if (it->second == value)
++        return;
++      it->second = value;
++    }
++    SendToAll(fmt::format("{} = {}\r\n", name, value));
++  }
++
++private:
++  static void SetNonBlocking(SOCKET sock)
++  {
++#ifdef _WIN32
++    u_long mode = 1;
++    ioctlsocket(sock, FIONBIO, &mode);
++#else
++    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
++#endif
++  }
++
++  // m_mutex must be held.
++  void SendToAll(const std::string& line)
++  {
++    for (std::size_t i = 0; i < m_clients.size();)
++    {
++      if (send(m_clients[i], line.data(), static_cast<int>(line.size()), 0) < 0 &&
++          WSAGetLastError() != WSAEWOULDBLOCK)
++      {
++        closesocket(m_clients[i]);
++        m_clients.erase(m_clients.begin() + i);
++      }
++      else
++      {
++        ++i;
++      }
++    }
++  }
++
++  void AnnounceUdp()
++  {
++    if (m_udp == INVALID_SOCKET)
++      return;
++
++    sockaddr_in to{};
++    to.sin_family = AF_INET;
++    to.sin_port = htons(m_udp_port);
++    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    const std::string packet = fmt::format("mame_start = {}\rtcp = {}\r", m_game, m_tcp_port);
++    sendto(m_udp, packet.data(), static_cast<int>(packet.size()), 0,
++           reinterpret_cast<const sockaddr*>(&to), sizeof(to));
++  }
++
++  void Run()
++  {
++    auto last_announce = std::chrono::steady_clock::time_point{};
++    while (m_running)
++    {
++      fd_set read_set;
++      FD_ZERO(&read_set);
++      FD_SET(m_listener, &read_set);
++      timeval timeout{.tv_sec = 0, .tv_usec = 200000};
++      if (select(static_cast<int>(m_listener) + 1, &read_set, nullptr, nullptr, &timeout) > 0 &&
++          FD_ISSET(m_listener, &read_set))
++      {
++        const SOCKET client = accept(m_listener, nullptr, nullptr);
++        if (client != INVALID_SOCKET)
++        {
++          SetNonBlocking(client);
++          std::lock_guard lock{m_mutex};
++          std::string greeting = fmt::format("mame_start = {}\r\n", m_game);
++          for (const auto& [name, value] : m_values)
++            greeting += fmt::format("{} = {}\r\n", name, value);
++          if (send(client, greeting.data(), static_cast<int>(greeting.size()), 0) >= 0)
++            m_clients.push_back(client);
++          else
++            closesocket(client);
++        }
++      }
++
++      {
++        // Drop clients that went away (the client never sends anything: a read of 0 means closed).
++        std::lock_guard lock{m_mutex};
++        for (std::size_t i = 0; i < m_clients.size();)
++        {
++          char byte;
++          const int n = recv(m_clients[i], &byte, 1, 0);
++          if (n == 0 || (n < 0 && WSAGetLastError() != WSAEWOULDBLOCK))
++          {
++            closesocket(m_clients[i]);
++            m_clients.erase(m_clients.begin() + i);
++          }
++          else
++          {
++            ++i;
++          }
++        }
++
++        const auto now = std::chrono::steady_clock::now();
++        if (m_clients.empty() && now - last_announce >= std::chrono::seconds(1))
++        {
++          last_announce = now;
++          AnnounceUdp();
++        }
++      }
++    }
++  }
++
++  const std::string m_game;
++  const u16 m_tcp_port;
++  const u16 m_udp_port;
++  SOCKET m_listener = INVALID_SOCKET;
++  SOCKET m_udp = INVALID_SOCKET;
++
++  std::mutex m_mutex;
++  std::map<std::string, int> m_values;
++  std::vector<SOCKET> m_clients;
++
++  std::atomic<bool> m_running{false};
++  std::thread m_thread;
++};
++
++
++// Built-in force feedback for the steering wheel.
++//
++// The game commands the arcade wheel with a TARGET position (WheelServo, -50..+51 = end stop to end
++// stop). This class reads the real wheel position (the pad's Control Stick X, as mapped by the user)
++// and computes   force = Kp * (target - position) - Kd * velocity   which is sent to a
++// force-feedback device (DirectInput / SDL "Constant" force) through Dolphin's controller interface.
++// It works with any device that exposes a "Constant" output (vJoy + BackForceFeeder, Logitech /
++// Thrustmaster / Fanatec wheels using their DirectInput driver...).
++//
++// Settings are read from <User>/Config/FZeroFFB.ini (key = value, '#' comments; reloaded on the fly):
++//   enabled (0/1, default 0), device (e.g. "DInput/0/Logitech G29 Driving Force Racing Wheel", empty =
++//   the device of GameCube pad 1), output (default "Constant"), servo_scale, kp, kd, max_force,
++//   slew_per_cycle, curve, min_force, invert_force, invert_position, init_force, start_enabled.
++// Orders can be written to <User>/Config/FZeroFFB_cmd.txt (test / shock / enable / disable / toggle);
++// the state is written to <User>/Config/FZeroFFB_status.txt (key=value) every 200 ms.
++class WheelForceFeedback
++{
++public:
++  WheelForceFeedback()
++  {
++    const std::string dir = File::GetUserPath(D_CONFIG_IDX);
++    m_ini_path = dir + "FZeroFFB.ini";
++    m_cmd_path = dir + "FZeroFFB_cmd.txt";
++    m_status_path = dir + "FZeroFFB_status.txt";
++    File::Delete(m_cmd_path, File::IfAbsentBehavior::NoConsoleWarning);
++    m_running = true;
++    m_thread = std::thread(&WheelForceFeedback::ThreadFunc, this);
++  }
++
++  ~WheelForceFeedback()
++  {
++    m_running = false;
++    if (m_thread.joinable())
++      m_thread.join();
++  }
++
++  WheelForceFeedback(const WheelForceFeedback&) = delete;
++  WheelForceFeedback& operator=(const WheelForceFeedback&) = delete;
++
++  // The device of GameCube pad 1 (read on the emulation thread, used when no device is configured).
++  void SetDefaultDevice(std::string device)
++  {
++    std::lock_guard lock{m_default_mutex};
++    m_default_device = std::move(device);
++  }
++
++  // Called from the emulation thread on every I/O update. 'pos' is the real wheel position (-1..1).
++  void SetInputs(int servo, int init_state, int power, double pos)
++  {
++    m_servo = servo;
++    m_init_state = init_state;
++    m_power = power;
++    m_pos = pos;
++    m_stamp = NowMs();
++    ++m_seq;
++  }
++
++private:
++  using Clock = std::chrono::steady_clock;
++
++  struct Settings
++  {
++    bool enabled = false;
++    std::string device;
++    std::string output = "Constant";
++    double servo_scale = 50.0;
++    double kp = 3.0;
++    double kd = 0.12;
++    double max_force = 0.35;
++    double slew = 0.08;
++    double curve = 1.0;
++    double min_force = 0.0;
++    bool invert_force = false;
++    bool invert_position = false;
++    bool init_force = false;
++    bool start_enabled = true;
++  };
++
++  static s64 ModTime(const std::string& path)
++  {
++    std::error_code ec;
++    const auto t = std::filesystem::last_write_time(StringToPath(path), ec);
++    return ec ? -1 : static_cast<s64>(t.time_since_epoch().count());
++  }
++
++  static s64 NowMs()
++  {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch())
++        .count();
++  }
++
++  Settings LoadSettings() const
++  {
++    Settings s;
++    std::ifstream file;
++    File::OpenFStream(file, m_ini_path, std::ios::in);
++    if (!file)
++      return s;
++
++    std::string line;
++    while (std::getline(file, line))
++    {
++      const auto hash = line.find('#');
++      if (hash != std::string::npos)
++        line.erase(hash);
++      const auto eq = line.find('=');
++      if (eq == std::string::npos)
++        continue;
++      std::string key{StripWhitespace(std::string_view{line}.substr(0, eq))};
++      const std::string val{StripWhitespace(std::string_view{line}.substr(eq + 1))};
++      std::transform(key.begin(), key.end(), key.begin(),
++                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++
++      double d = 0.0;
++      const bool is_num =
++          !val.empty() && std::from_chars(val.data(), val.data() + val.size(), d).ec == std::errc{};
++      const bool on = (val == "1");
++
++      if (key == "enabled")
++        s.enabled = on;
++      else if (key == "device")
++        s.device = val;
++      else if (key == "output" && !val.empty())
++        s.output = val;
++      else if (key == "servo_scale" && is_num && d > 1.0)
++        s.servo_scale = d;
++      else if (key == "kp" && is_num)
++        s.kp = d;
++      else if (key == "kd" && is_num)
++        s.kd = d;
++      else if (key == "max_force" && is_num)
++        s.max_force = std::clamp(d, 0.0, 1.0);
++      else if (key == "slew_per_cycle" && is_num && d > 0.0)
++        s.slew = d;
++      else if (key == "curve" && is_num)
++        s.curve = std::clamp(d, 0.2, 1.0);
++      else if (key == "min_force" && is_num)
++        s.min_force = std::clamp(d, 0.0, 0.5);
++      else if (key == "invert_force")
++        s.invert_force = on;
++      else if (key == "invert_position")
++        s.invert_position = on;
++      else if (key == "init_force")
++        s.init_force = on;
++      else if (key == "start_enabled")
++        s.start_enabled = (val != "0");
++    }
++    return s;
++  }
++
++  std::string TakeCommands() const
++  {
++    if (!File::Exists(m_cmd_path))
++      return {};
++    const std::string run = m_cmd_path + ".run";
++    File::Delete(run, File::IfAbsentBehavior::NoConsoleWarning);
++    if (!File::Rename(m_cmd_path, run))
++      return {};
++    std::string text;
++    File::ReadFileToString(run, text);
++    File::Delete(run, File::IfAbsentBehavior::NoConsoleWarning);
++    return text;
++  }
++
++  void WriteStatus(const std::string& text) const
++  {
++    const std::string tmp = m_status_path + ".tmp";
++    {
++      std::ofstream file;
++      File::OpenFStream(file, tmp, std::ios::out | std::ios::binary | std::ios::trunc);
++      if (!file)
++        return;
++      file << text;
++    }
++    File::Rename(tmp, m_status_path);
++  }
++
++  // Works out which device to use (called about once a second: the settings or pad 1 may change).
++  void ResolveDeviceName(const Settings& s)
++  {
++    m_devq = ciface::Core::DeviceQualifier{};
++    if (!s.device.empty())
++    {
++      m_devq.FromString(s.device);
++    }
++    else
++    {
++      std::string default_device;
++      {
++        std::lock_guard lock{m_default_mutex};
++        default_device = m_default_device;
++      }
++      if (!default_device.empty())
++        m_devq.FromString(default_device);
++    }
++    m_device_name = m_devq.source.empty() ? std::string{} : m_devq.ToString();
++  }
++
++  // Sends a force to the device. The device is looked up each time and everything happens while the
++  // devices mutex is held: a device refresh (hot-plug, window change...) can then never destroy the
++  // device while it is in use, and this thread never owns the last reference to a device.
++  // Returns false if the device (or its force-feedback output) does not exist.
++  bool SendForce(const Settings& s, double value)
++  {
++    if (m_devq.source.empty())
++      return false;
++    std::lock_guard lock{g_controller_interface.GetDevicesMutex()};
++    const std::shared_ptr<ciface::Core::Device> device = g_controller_interface.FindDevice(m_devq);
++    if (!device)
++      return false;
++    ciface::Core::Device::Output* const output = device->FindOutput(s.output);
++    if (!output)
++      return false;
++    output->SetState(value);
++    return true;
++  }
++
++  void ThreadFunc()
++  {
++    Common::SetCurrentThreadName("FZeroAX force feedback");
++
++    using namespace std::chrono_literals;
++    Settings s = LoadSettings();
++    bool enabled = s.start_enabled;
++    double force = 0.0;     // -1..1, positive = toward the right (before the device sign)
++    double vel_f = 0.0;
++    double last_pos = 0.0;
++    double peak = 0.0;
++    double last_sent = 2.0;   // last (quantized) value sent to the device
++    s64 last_ini_mtime = -2;
++    u32 last_seq = 0;
++    int state = 7;
++    bool nudge_sign = false;
++    bool have_device = false;
++
++    auto last_sample = Clock::now();
++    auto last_cycle = Clock::now();
++    auto last_send = Clock::now();
++    auto last_poll = Clock::time_point{};
++    auto last_status = Clock::time_point{};
++    auto last_resolve = Clock::time_point{};
++    auto test_until = Clock::time_point{};
++    auto shock_until = Clock::time_point{};
++
++    while (m_running)
++    {
++      std::this_thread::sleep_for(10ms);
++      const auto now = Clock::now();
++      const double dt_cycle = std::clamp(std::chrono::duration<double>(now - last_cycle).count(),
++                                         0.001, 0.1);
++      last_cycle = now;
++
++      if (now - last_poll >= 250ms)
++      {
++        last_poll = now;
++        const s64 mtime = ModTime(m_ini_path);
++        if (mtime != last_ini_mtime)
++        {
++          last_ini_mtime = mtime;
++          s = LoadSettings();
++        }
++
++        const std::string orders = TakeCommands();
++        std::size_t start = 0;
++        while (start < orders.size())
++        {
++          std::size_t end = orders.find('\n', start);
++          if (end == std::string::npos)
++            end = orders.size();
++          std::string cmd{StripWhitespace(std::string_view{orders}.substr(start, end - start))};
++          std::transform(cmd.begin(), cmd.end(), cmd.begin(),
++                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++          if (cmd == "test")
++            test_until = now + 2400ms;
++          else if (cmd == "shock")
++            shock_until = now + 900ms;
++          else if (cmd == "enable")
++            enabled = true;
++          else if (cmd == "disable")
++            enabled = false;
++          else if (cmd == "toggle")
++            enabled = !enabled;
++          start = end + 1;
++        }
++      }
++      bool probe = false;
++      if (now - last_resolve >= 1s)
++      {
++        last_resolve = now;
++        ResolveDeviceName(s);
++        probe = true;
++      }
++
++      // Inputs from the emulation thread
++      const s64 stamp = m_stamp;
++      const bool fresh = stamp != 0 && (NowMs() - stamp) < 500;
++      const int servo = m_servo;
++      const int init_state = m_init_state;
++      const int power = m_power;
++      double pos = std::clamp(static_cast<double>(m_pos), -1.0, 1.0);
++      if (s.invert_position)
++        pos = -pos;
++      const u32 seq = m_seq;
++      if (seq != last_seq)
++      {
++        last_seq = seq;
++        const double dt = std::max(0.001, std::chrono::duration<double>(now - last_sample).count());
++        last_sample = now;
++        vel_f = 0.8 * vel_f + 0.2 * ((pos - last_pos) / dt);
++        last_pos = pos;
++      }
++
++      const bool shock = now < shock_until;
++      const bool test = now < test_until;
++
++      double desired = 0.0;
++      if (!s.enabled)
++      {
++        state = 7;
++      }
++      else if (shock)
++      {
++        // Full force to the right (0.25 s), pause, full force to the left (0.25 s)
++        const double t = 0.9 - std::chrono::duration<double>(shock_until - now).count();
++        desired = (t < 0.25 ? 1.0 : (t >= 0.45 && t < 0.70 ? -1.0 : 0.0)) * s.max_force;
++        state = 6;
++      }
++      else if (test)
++      {
++        // Gentle push to the right (0 - 0.8 s) then to the left (0.8 - 1.6 s)
++        const double t = 2.4 - std::chrono::duration<double>(test_until - now).count();
++        desired = (t < 0.8 ? 0.4 : (t < 1.6 ? -0.4 : 0.0)) * s.max_force;
++        state = 6;
++      }
++      else if (!fresh)
++      {
++        state = 1;
++      }
++      else if (init_state != 2 && !(s.init_force && init_state != 0))
++      {
++        state = 2;
++      }
++      else if (power != 1)
++      {
++        state = 3;
++      }
++      else if (!enabled)
++      {
++        state = 5;
++      }
++      else
++      {
++        state = 4;
++        const double target = std::clamp(servo / s.servo_scale, -1.0, 1.0);
++        double f = std::clamp(s.kp * (target - pos) - s.kd * vel_f, -1.0, 1.0);
++        double a = std::abs(f);
++        a = a < 0.02 ? 0.0 : s.min_force + (1.0 - s.min_force) * std::pow(a, s.curve);
++        desired = (f < 0.0 ? -a : a) * s.max_force;
++      }
++
++      // Smoothing: maximum change per 10 ms (not applied to the shock test)
++      double delta = desired - force;
++      if (!shock)
++      {
++        const double step = s.slew * (dt_cycle / 0.01);
++        delta = std::clamp(delta, -step, step);
++      }
++      force += delta;
++      if (desired == 0.0 && std::abs(force) < 0.001)
++        force = 0.0;
++      peak = std::max(std::abs(force), peak * std::pow(0.995, dt_cycle / 0.01));
++
++      // Dolphin's constant-force effects push toward the LEFT for a positive value: flip the sign.
++      const double sign = s.invert_force ? -1.0 : 1.0;
++      // Every write is a call into the device driver (vJoy / wheel) and the emulation thread polls
++      // the same devices: quantize the force (0.5 %) and send at most 40 changes per second.
++      double q = std::round(-force * sign * 200.0) / 200.0;
++      if (q == 0.0)
++        q = 0.0;  // no negative zero
++      const bool changed = q != last_sent;
++      bool must_send = probe;
++      double out = q;
++      if (changed && (q == 0.0 || now - last_send >= 25ms))
++      {
++        must_send = true;
++      }
++      else if (!changed && q != 0.0 && now - last_send > 8s)
++      {
++        // The effect lasts 10 s: re-trigger it with a one-count change if the value did not move.
++        nudge_sign = !nudge_sign;
++        out = q + (nudge_sign ? 0.0002 : -0.0002);
++        must_send = true;
++      }
++      if (must_send)
++      {
++        have_device = SendForce(s, out);
++        last_send = now;
++        last_sent = q;
++      }
++
++      if (now - last_status >= 250ms)
++      {
++        last_status = now;
++        WriteStatus(fmt::format("alive=1\nmode=embedded\nstate={}\nservo={}\npos={:.3f}\n"
++                                "force={:.3f}\nmax={:.3f}\nenabled={}\ninvert={}\ndry=0\n"
++                                "peak={:.3f}\ndevice={}\ndevice_name={}\n",
++                                state, servo, pos, force * sign, s.max_force, enabled ? 1 : 0,
++                                s.invert_force ? 1 : 0, peak, have_device ? 1 : 0, m_device_name));
++      }
++    }
++
++    SendForce(s, 0.0);
++    WriteStatus("alive=0\nmode=embedded\n");
++  }
++
++  std::string m_ini_path;
++  std::string m_cmd_path;
++  std::string m_status_path;
++
++  ciface::Core::DeviceQualifier m_devq;
++  std::string m_device_name;
++
++  std::mutex m_default_mutex;
++  std::string m_default_device;
++
++  std::atomic<int> m_servo{0};
++  std::atomic<int> m_init_state{0};
++  std::atomic<int> m_power{-1};
++  std::atomic<double> m_pos{0.0};
++  std::atomic<s64> m_stamp{0};
++  std::atomic<u32> m_seq{0};
++
++  std::atomic<bool> m_running{false};
++  std::thread m_thread;
++};
++
++FZeroAXCommon_IOAdapter::FZeroAXCommon_IOAdapter(FZeroAXSteeringWheel* steering_wheel)
++    : m_steering_wheel{steering_wheel}
++{
++  m_ffb = std::make_unique<WheelForceFeedback>();
++
++  Common::IniFile ini;
++  ini.Load(File::GetUserPath(F_DOLPHINCONFIG_IDX));
++  Common::IniFile::Section* const core = ini.GetOrCreateSection("Core");
++
++  bool enabled = true;
++  int tcp_port = 8000;
++  int udp_port = 8001;
++  core->Get("TriforceOutputs", &enabled, true);
++  core->Get("TriforceOutputsTcpPort", &tcp_port, 8000);
++  core->Get("TriforceOutputsUdpPort", &udp_port, 8001);
++
++  if (!enabled || tcp_port <= 0 || tcp_port > 65535 || udp_port < 0 || udp_port > 65535)
++    return;
++
++  m_outputs = std::make_unique<NetworkOutputs>("fzeroax", static_cast<u16>(tcp_port),
++                                               static_cast<u16>(udp_port));
++  m_outputs->Set("mamerun", 1);
++  m_outputs->Set("WheelServo", 0);
++  m_outputs->Set("WheelInit", 0);
++  for (const char* name : {"LampStart", "LampView1", "LampView2", "LampView3", "LampView4",
++                           "LampBoost", "LampLeader"})
++  {
++    m_outputs->Set(name, 0);
++  }
++}
++
++FZeroAXCommon_IOAdapter::~FZeroAXCommon_IOAdapter() = default;
++
++
+ void FZeroAXCommon_IOAdapter::Update()
+ {
+   auto* const io_ports = GetIOPorts();
+@@ -79,6 +771,66 @@ void FZeroAXCommon_IOAdapter::Update()
+   analog_inputs[5] = Common::ExpandValue<u16>(pad_status.triggerLeft, 8);
+   // Seat Motion
+   analog_inputs[6] = IOPorts::NEUTRAL_ANALOG_VALUE;
++
++  // Built-in force feedback: game target, wheel state and the real wheel position.
++  if (m_ffb)
++  {
++    m_ffb->SetInputs(m_steering_wheel->GetServoPosition(), m_steering_wheel->GetInitState(),
++                     m_steering_wheel->GetCommandValue(0),
++                     (static_cast<int>(pad_status.stickX) - 128) / 127.0);
++
++    // Once in a while (about once a second), tell it which device pad 1 uses.
++    if ((m_ffb_counter++ % 64) == 0)
++    {
++      std::string device;
++      if (InputConfig* const config = Pad::GetConfig())
++      {
++        if (ControllerEmu::EmulatedController* const controller = config->GetController(0))
++        {
++          const ciface::Core::DeviceQualifier& qualifier = controller->GetDefaultDevice();
++          if (!qualifier.source.empty())
++            device = qualifier.ToString();
++        }
++      }
++      m_ffb->SetDefaultDevice(std::move(device));
++    }
++  }
++
++  // Steering wheel (force feedback) commands, for external software such as BackForceFeeder.
++  // WheelServo is the target position requested by the game (about -56..+56).
++  if (m_outputs)
++  {
++    const int servo = m_steering_wheel->GetServoPosition();
++    if (servo != m_published_servo)
++    {
++      m_published_servo = servo;
++      m_outputs->Set("WheelServo", servo);
++    }
++    const int init_state = m_steering_wheel->GetInitState();
++    if (init_state != m_published_init)
++    {
++      m_published_init = init_state;
++      m_outputs->Set("WheelInit", init_state);
++    }
++    // Every command ever received is published (WheelCmd<N> = last value). Except for the position
++    // target (4), a WheelCnt<N> counter is published too, so that a repeated identical command
++    // (e.g. a short "shake" command always sent with the same argument) can still be seen.
++    const u32 serial = m_steering_wheel->GetCommandSerial();
++    if (serial != m_published_serial)
++    {
++      m_published_serial = serial;
++      for (u8 command = 0; command < 0x80; ++command)
++      {
++        const s32 value = m_steering_wheel->GetCommandValue(command);
++        if (value < 0)
++          continue;
++        m_outputs->Set(fmt::format("WheelCmd{}", command), value);
++        if (command != 4)
++          m_outputs->Set(fmt::format("WheelCnt{}", command),
++                         static_cast<int>(m_steering_wheel->GetCommandCount(command)));
++      }
++    }
++  }
+ }
+ 
+ void FZeroAXCommon_IOAdapter::HandleGenericOutputsChanged(std::span<const u8> bits_set,
+@@ -103,6 +855,28 @@ void FZeroAXCommon_IOAdapter::HandleGenericOutputsChanged(std::span<const u8> bi
+                    (bits_set[0] & led_value) ? "ON" : "OFF");
+     }
+   }
++
++  // Publish the lamps to external software (BackForceFeeder, ...). Output names follow the ones MAME
++  // uses for Sega/Namco racing cabinets; the boost lamp is also published as "LampLeader" because
++  // that is the output BackForceFeeder maps without any profile.
++  m_lamp_bits = static_cast<u8>((m_lamp_bits | bits_set[0]) & ~bits_cleared[0]);
++  if (m_outputs)
++  {
++    constexpr auto LAMP_OUTPUTS = std::to_array<std::pair<u8, const char*>>({
++        {0x80, "LampStart"},
++        {0x20, "LampView1"},
++        {0x10, "LampView2"},
++        {0x08, "LampView3"},
++        {0x04, "LampView4"},
++        {0x40, "LampBoost"},
++        {0x40, "LampLeader"},
++    });
++    for (const auto& [lamp_value, lamp_name] : LAMP_OUTPUTS)
++    {
++      if (bits_changed_0 & lamp_value)
++        m_outputs->Set(lamp_name, (m_lamp_bits & lamp_value) ? 1 : 0);
++    }
++  }
+ }
+ 
+ void FZeroAXDeluxe_IOAdapter::Update()
+@@ -220,6 +994,9 @@ void FZeroAXSteeringWheel::ProcessRequest(std::span<const u8> request)
+ 
+   // The first byte is XOR'd with 0x80.
+   const u8 cmd = request[0] ^ 0x80u;
++  m_command_values[cmd & 0x7f] = (s32(request[1]) << 8) | request[2];
++  ++m_command_counts[cmd & 0x7f];
++  ++m_command_serial;
+   switch (cmd)
+   {
+   case 0:  // Power on/off ?
+diff --git a/Source/Core/Core/HW/Triforce/FZeroAX.h b/Source/Core/Core/HW/Triforce/FZeroAX.h
+index 1868833..c9a6585 100644
+--- a/Source/Core/Core/HW/Triforce/FZeroAX.h
++++ b/Source/Core/Core/HW/Triforce/FZeroAX.h
+@@ -3,6 +3,9 @@
+ 
+ #pragma once
+ 
++#include <array>
++#include <memory>
++
+ #include "Core/HW/Triforce/IOPorts.h"
+ #include "Core/HW/Triforce/SerialDevice.h"
+ 
+@@ -19,6 +22,14 @@ public:
+ 
+   s8 GetServoPosition() const { return m_servo_position; }
+ 
++  // Last (byte 1 << 8 | byte 2) received for each wheel command, or -1 if never received.
++  s32 GetCommandValue(u8 command) const { return m_command_values[command & 0x7f]; }
++  // Number of times each wheel command was received (a repeated identical value is otherwise invisible).
++  u32 GetCommandCount(u8 command) const { return m_command_counts[command & 0x7f]; }
++  // Incremented every time a wheel command is received (lets callers skip work when nothing arrived).
++  u32 GetCommandSerial() const { return m_command_serial; }
++  u8 GetInitState() const { return m_init_state; }
++
+   void DoState(PointerWrap&) override;
+ 
+ private:
+@@ -27,16 +38,30 @@ private:
+   u8 m_init_state = 0;
+ 
+   s8 m_servo_position = 0;
++
++  std::array<s32, 0x80> m_command_values = [] {
++    std::array<s32, 0x80> values;
++    values.fill(-1);
++    return values;
++  }();
++  std::array<u32, 0x80> m_command_counts{};
++  u32 m_command_serial = 0;
+ };
+ 
++// Publishes cabinet outputs (lamps) to external software such as BackForceFeeder, using the same
++// "network outputs" protocol as MAME/Flycast. Defined in FZeroAX.cpp.
++class NetworkOutputs;
++
++// Built-in force feedback: drives a force-feedback device (steering wheel) from the game's target
++// wheel position. Defined in FZeroAX.cpp.
++class WheelForceFeedback;
++
+ // Used for both FZeroAX and FZeroAXMonster.
+ class FZeroAXCommon_IOAdapter final : public IOAdapter
+ {
+ public:
+-  explicit FZeroAXCommon_IOAdapter(FZeroAXSteeringWheel* steering_wheel)
+-      : m_steering_wheel{steering_wheel}
+-  {
+-  }
++  explicit FZeroAXCommon_IOAdapter(FZeroAXSteeringWheel* steering_wheel);
++  ~FZeroAXCommon_IOAdapter() override;
+ 
+   void Update() override;
+ 
+@@ -46,6 +71,16 @@ protected:
+ 
+ private:
+   FZeroAXSteeringWheel* const m_steering_wheel;
++  std::unique_ptr<NetworkOutputs> m_outputs;
++  std::unique_ptr<WheelForceFeedback> m_ffb;
++  u32 m_ffb_counter = 0;
++
++  // What was last published on the network outputs (only changes are published, and only when
++  // the wheel actually received something: this runs on every serial transfer).
++  u32 m_published_serial = ~0u;
++  int m_published_servo = 0x7fffffff;
++  int m_published_init = 0x7fffffff;
++  u8 m_lamp_bits = 0;
+ };
+ 
+ // Includes seat motion handling.
+-- 
+2.54.0.windows.1
+

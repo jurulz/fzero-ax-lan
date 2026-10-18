@@ -1,0 +1,18 @@
+# Build outputs and runtime files
+*.exe
+*.dll
+*.pdb
+release/
+crash_report.txt
+FZeroLAN.ini
+ffb_status.txt*
+ffb_cmd.txt*
+FZeroFFB_*.txt*
+dolphin_outputs_*.txt
+
+# Never commit game data or firmware
+*.iso
+*.gcm
+*.dol
+*.dol.before_LAN
+User/
