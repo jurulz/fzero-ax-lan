@@ -4,7 +4,7 @@
 
 Faites tourner **F-Zero AX** (carte arcade Triforce) sur un [Dolphin](https://dolphin-emu.org) modifié, avec des **bornes liées** (mode VS en réseau local), des **sorties pour les lampes** et le **retour de force**.
 
-> **Dolphin modifié, non officiel.** Le `Dolphin.exe` des releases est un **build modifié et non officiel de [Dolphin](https://dolphin-emu.org)** (GPL-2.0 ou plus récente) : commit upstream `66d8a892203d76a1f7349ed07526089b828e3835` plus les patches de [`dolphin/patches/`](dolphin/patches/). Il n'est ni conçu, ni soutenu, ni approuvé par le Dolphin Emulator Project : **ne leur signalez pas de problèmes avec ce build**, ouvrez plutôt un ticket (« issue ») ici. Ne l'utilisez pas pour le netplay ni pour autre chose qui attend un build officiel.
+> **Dolphin modifié, non officiel.** Le `Dolphin.exe` des releases est un **build modifié et non officiel de [Dolphin](https://dolphin-emu.org)** (GPL-2.0 ou plus récente) : commit upstream `66d8a892203d76a1f7349ed07526089b828e3835` plus les patches de [`dolphin/patches/`](dolphin/patches/) (release 0.9.0 = tag [`fzero-ax-lan-v0.9.0`](https://github.com/jurulz/dolphin/tree/fzero-ax-lan-v0.9.0) du fork, voir [SOURCE.md](SOURCE.md)). Il n'est ni conçu, ni soutenu, ni approuvé par le Dolphin Emulator Project : **ne leur signalez pas de problèmes avec ce build**, ouvrez plutôt un ticket (« issue ») ici. Ne l'utilisez pas pour le netplay ni pour autre chose qui attend un build officiel.
 
 > Les fenêtres des outils (patcher, réglages du retour de force) sont **en anglais** ; les noms de boutons ci-dessous sont donc donnés en anglais.
 
@@ -12,14 +12,32 @@ Faites tourner **F-Zero AX** (carte arcade Triforce) sur un [Dolphin](https://do
 
 Il vous faut votre propre ISO **F-Zero AX (Japan) (Rev E)** (ID du jeu `GFZJ8P`, SHA-1 `73f3ddec23c85bc65ae51ed2ce8973231dadaeb1`, détails [plus bas](#quelle-iso-)) et deux PC Windows ou plus sur le même réseau.
 
-1. Téléchargez le zip de la release et décompressez-le sur **chaque** PC.
+1. Téléchargez [le zip de la release](https://github.com/jurulz/fzero-ax-lan/releases) (release actuelle : **0.9.0**) et décompressez-le sur **chaque** PC.
 2. Copiez votre ISO dans `Game\`.
 3. Lancez `FZero_LAN_Patcher.exe` sur chaque PC : choisissez *This cabinet is* (1 sur le premier PC, 2 sur le deuxième...), le nombre de bornes et l'IP réelle de chacune, puis **APPLY**, **Dolphin firewall** (une seule fois) et **Launch game**.
-4. Sur l'écran *CHECKING NETWORK*, `1 OK` et `2 OK` signifient que vous êtes liés.
+4. Premier démarrage : le jeu demande une calibration (voir [plus bas](#premier-démarrage--calibration)).
+5. Sur l'écran *CHECKING NETWORK*, `1 OK` et `2 OK` signifient que vous êtes liés.
 
 Le menu test / service (touche `T`) est facultatif et demande **votre propre** `segaboot.gcm` dans `Dolphin-FZero\User\Triforce\` (voir [plus bas](#facultatif--le-menu-test--service-segabootgcm)). Tout le reste fonctionne sans lui.
 
 Le retour de force et les lampes sont facultatifs : voir [LISEZ-MOI.txt](LISEZ-MOI.txt) (une page) ou les sections ci-dessous.
+
+## Contenu du zip de la release
+
+Le zip de la release 0.9.0 (`FZero_LAN-v0.9.0-win64.zip`, 31,9 Mo) se décompresse en un seul dossier, `FZero_LAN\` :
+
+| Dans le zip | Contenu |
+|---|---|
+| `Dolphin-FZero\` | Le Dolphin modifié, portable (`Dolphin.exe`, `DolphinTool.exe`, DLL de Qt et du runtime Visual C++, `Sys\`, licences). `User\Triforce\` contient un fichier repère pour le `segaboot.gcm` facultatif. |
+| `FZero_LAN_Patcher.exe` / `.ahk` | Le patcher (le `.exe` est une copie d'AutoHotkey qui exécute le `.ahk` voisin). |
+| `FFB\` | `FFB_Settings.exe` / `.ahk` (réglages du retour de force), `DolphinFFBBridge.exe` (pont externe facultatif), `SDL2.dll`, `ffb_bridge.ini`. |
+| `Game\` | Mettez votre ISO ici (`PUT_ISO_HERE.txt`). |
+| `Tools\` | `listen_dolphin_outputs.ps1` (enregistre les sorties lampes / volant, diagnostic). |
+| `docs\` | Les documents du dossier `docs/` de ce dépôt (en anglais). |
+| `dolphin-patches\` | Les 6 patches Dolphin (`0001` à `0006`) : les mêmes que [`dolphin/patches/`](dolphin/patches/). |
+| `START_HERE.txt`, `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE.md` | Guide d'une page, lisez-moi, changements, licence et mentions des composants tiers. |
+
+Pour vérifier votre téléchargement : `Get-FileHash -Algorithm SHA256 FZero_LAN-v0.9.0-win64.zip` dans PowerShell doit donner `30f9a468a0a2eaa730a6ff6ce05a5b41fb62a882a11c9f8bdd57014e6d6ad133` (aussi dans `SHA256SUMS.txt` sur la page de la release).
 
 ## Contenu du dépôt
 
@@ -78,6 +96,10 @@ Testé sur deux PC de bornes (Windows 10 LTSC 1809, accès par Chrome Remote Des
 
 Détails, options et dépannage : [docs/LINK.md](docs/LINK.md) (en anglais).
 
+## Premier démarrage : calibration
+
+Au premier démarrage, le jeu affiche un écran de calibration (*Please carry out adjustment of a handle and a brake*, avec `HANDLE UP / DOWN / LEFT / RIGHT`). Avec le mappage clavier par défaut : flèches **Gauche / Droite** pour le volant, **W** pour l'accélérateur, **Q** pour le frein, puis **Entrée**. L'écran cite aussi *haut* et *bas* pour le volant : utilisez les flèches **Haut / Bas** (un vrai volant n'a que l'axe gauche / droite, et l'axe haut / bas ne sert pas en course). Ne touchez à rien pendant quelques secondes quand l'écran apparaît, puis bougez les contrôles.
+
 ## Contrôles
 
 Dolphin pilote la carte de base Triforce par un mappage de manette GameCube. Voici ce que fait chaque contrôle dans F-Zero AX (les titres des groupes de la fenêtre de la manette Triforce le disent aussi) :
@@ -96,7 +118,7 @@ Dolphin pilote la carte de base Triforce par un mappage de manette GameCube. Voi
 | Groupe « Triforce » : Service | Bouton Service | `S` |
 | Groupe « Triforce » : Coin | Pièce / crédit | `1` |
 
-Inutilisés par le jeu : B, Z, C-Stick, axe Y du stick. Le patcher peut ajouter les touches du clavier pour Test / Service / Coin **en plus** d'une manette ou d'un périphérique vJoy (« mappage hybride »).
+Inutilisés par le jeu : B, Z, C-Stick. Axe Y du stick : inutile en course ; seul l'écran de calibration cite *haut* / *bas* pour le volant (les flèches du clavier suffisent). Le patcher peut ajouter les touches du clavier pour Test / Service / Coin **en plus** d'une manette ou d'un périphérique vJoy (« mappage hybride »).
 
 ## Retour de force
 

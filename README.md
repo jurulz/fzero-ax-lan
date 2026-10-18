@@ -4,20 +4,38 @@
 
 Run **F-Zero AX** (Triforce arcade board) on a modified [Dolphin](https://dolphin-emu.org) with **linked cabinets** (VS mode over a LAN), **lamp outputs** and **force feedback**.
 
-> **Unofficial modified Dolphin.** The `Dolphin.exe` in the releases is a **modified, unofficial build of [Dolphin](https://dolphin-emu.org)** (GPL-2.0-or-later): upstream commit `66d8a892203d76a1f7349ed07526089b828e3835` plus the patches in [`dolphin/patches/`](dolphin/patches/). It is not made, supported or endorsed by the Dolphin Emulator Project: **do not report problems with this build to them**, open an issue here instead. Please do not use it for netplay or anything else that expects an official build.
+> **Unofficial modified Dolphin.** The `Dolphin.exe` in the releases is a **modified, unofficial build of [Dolphin](https://dolphin-emu.org)** (GPL-2.0-or-later): upstream commit `66d8a892203d76a1f7349ed07526089b828e3835` plus the patches in [`dolphin/patches/`](dolphin/patches/) (release 0.9.0 = tag [`fzero-ax-lan-v0.9.0`](https://github.com/jurulz/dolphin/tree/fzero-ax-lan-v0.9.0) of the fork, see [SOURCE.md](SOURCE.md)). It is not made, supported or endorsed by the Dolphin Emulator Project: **do not report problems with this build to them**, open an issue here instead. Please do not use it for netplay or anything else that expects an official build.
 
 ## TL;DR
 
 You need your own **F-Zero AX (Japan) (Rev E)** ISO (game ID `GFZJ8P`, SHA-1 `73f3ddec23c85bc65ae51ed2ce8973231dadaeb1`, details [below](#which-iso)) and two or more Windows PCs on the same network.
 
-1. Download the release zip and unzip it on **each** PC.
+1. Download [the release zip](https://github.com/jurulz/fzero-ax-lan/releases) (current release: **0.9.0**) and unzip it on **each** PC.
 2. Copy your ISO into `Game\`.
 3. Run `FZero_LAN_Patcher.exe` on each PC: pick *This cabinet is* (1 on the first PC, 2 on the second...), the number of cabinets and the real IP of each one, then **APPLY**, **Dolphin firewall** (once) and **Launch game**.
-4. On the *CHECKING NETWORK* screen, `1 OK` and `2 OK` mean you are linked.
+4. First start: the game asks for a calibration (see [below](#first-start-calibration)).
+5. On the *CHECKING NETWORK* screen, `1 OK` and `2 OK` mean you are linked.
 
 The test / service menu (key `T`) is optional and needs your own `segaboot.gcm` in `Dolphin-FZero\User\Triforce\` (see [below](#optional-the-test--service-menu-segabootgcm)). Everything else works without it.
 
 Force feedback and lamps are optional: see [START_HERE.txt](START_HERE.txt) (one page) or the sections below.
+
+## What's in the release zip
+
+The zip of release 0.9.0 (`FZero_LAN-v0.9.0-win64.zip`, 31.9 MB) unzips to one folder, `FZero_LAN\`:
+
+| In the zip | What it is |
+|---|---|
+| `Dolphin-FZero\` | The modified, portable Dolphin (`Dolphin.exe`, `DolphinTool.exe`, Qt and Visual C++ runtime DLLs, `Sys\`, licenses). `User\Triforce\` holds a placeholder for the optional `segaboot.gcm`. |
+| `FZero_LAN_Patcher.exe` / `.ahk` | The patcher (the `.exe` is a copy of AutoHotkey that runs the `.ahk` next to it). |
+| `FFB\` | `FFB_Settings.exe` / `.ahk` (force feedback settings), `DolphinFFBBridge.exe` (optional external bridge), `SDL2.dll`, `ffb_bridge.ini`. |
+| `Game\` | Put your ISO here (`PUT_ISO_HERE.txt`). |
+| `Tools\` | `listen_dolphin_outputs.ps1` (records the lamp / wheel outputs, diagnostics). |
+| `docs\` | The documents of this repository's `docs/` folder. |
+| `dolphin-patches\` | The 6 Dolphin patches (`0001` to `0006`): the same as [`dolphin/patches/`](dolphin/patches/). |
+| `START_HERE.txt`, `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE.md` | One-page guide, readme, changes, license and third-party notices. |
+
+To check your download: `Get-FileHash -Algorithm SHA256 FZero_LAN-v0.9.0-win64.zip` in PowerShell must give `30f9a468a0a2eaa730a6ff6ce05a5b41fb62a882a11c9f8bdd57014e6d6ad133` (also in `SHA256SUMS.txt` on the release page).
 
 ## What's here
 
@@ -68,7 +86,7 @@ Tested on two cabinet PCs (Windows 10 LTSC 1809, Chrome Remote Desktop for acces
 
 ## Quick start
 
-1. Download the latest release zip (it contains a ready-to-run Dolphin build, the patcher and the tools) and unzip it **on each cabinet PC** (same build everywhere).
+1. Download the latest release zip (it contains a ready-to-run Dolphin build, the patcher, the force feedback tools and the docs) and unzip it **on each cabinet PC** (same build everywhere).
 2. Put your ISO in `Game\`.
 3. Run `FZero_LAN_Patcher.exe` (or the `.ahk` with [AutoHotkey v2](https://www.autohotkey.com)):
    - *This cabinet is*: Cabinet 1 on the first PC, Cabinet 2 on the second one...
@@ -77,6 +95,10 @@ Tested on two cabinet PCs (Windows 10 LTSC 1809, Chrome Remote Desktop for acces
 4. On the *CHECKING NETWORK* screen, `1 OK` and `2 OK` mean the cabinets see each other.
 
 Details, options and troubleshooting: [docs/LINK.md](docs/LINK.md).
+
+## First start: calibration
+
+The first time the game starts it shows a calibration screen (*Please carry out adjustment of a handle and a brake*, with `HANDLE UP / DOWN / LEFT / RIGHT`). With the default keyboard mapping: **Left / Right** arrows for the wheel, **W** for the accelerator, **Q** for the brake, then **Enter**. The screen also lists *up* and *down* for the handle: use the **Up / Down** arrow keys for those (a real wheel only has the left / right axis, and the up / down axis is not used in a race). Keep the controls untouched for a few seconds when the screen appears, then move them.
 
 ## Controls
 
@@ -96,7 +118,7 @@ Dolphin drives the Triforce baseboard through a GameCube pad mapping. This is wh
 | "Triforce" group: Service | Service button | `S` |
 | "Triforce" group: Coin | Coin / credit | `1` |
 
-Not used by the game: B, Z, C-Stick, Control Stick Y. The patcher can add the keyboard keys for Test / Service / Coin **on top of** a gamepad or vJoy device ("hybrid mapping").
+Not used by the game: B, Z, C-Stick. Control Stick Y: not used in a race; only the calibration screen lists *up* / *down* for the handle (keyboard arrows are enough for it). The patcher can add the keyboard keys for Test / Service / Coin **on top of** a gamepad or vJoy device ("hybrid mapping").
 
 ## Force feedback
 
