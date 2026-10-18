@@ -129,6 +129,10 @@ cmake --preset ninja-release-x64 && cmake --build --preset ninja-build-release-x
 - [docs/WHEEL_PROTOCOL.md](docs/WHEEL_PROTOCOL.md) : ce que le jeu envoie au volant à retour de force (mesuré sur de vraies courses).
 - [docs/PATCHES.md](docs/PATCHES.md) : quels octets du `main.dol` le patcher modifie, et pourquoi.
 
+## Code source
+
+Le code source complet de chaque binaire des releases, avec le commit exact, est indiqué dans [SOURCE.md](SOURCE.md) (en anglais). Le Dolphin modifié est la branche `fzero-ax-lan` de <https://github.com/jurulz/dolphin> ; les mêmes changements sont dans [dolphin/patches/](dolphin/patches/).
+
 ## Licence
 
 Les patches de Dolphin et tout le reste de ce dépôt sont sous licence **GPL-2.0 ou plus récente** (voir [LICENSE](LICENSE)), comme Dolphin. Les composants tiers fournis dans le zip de la release et leurs licences sont listés dans [NOTICE.md](NOTICE.md).

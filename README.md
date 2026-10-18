@@ -129,6 +129,10 @@ cmake --preset ninja-release-x64 && cmake --build --preset ninja-build-release-x
 - [docs/WHEEL_PROTOCOL.md](docs/WHEEL_PROTOCOL.md): what the game sends to the force-feedback wheel (measured on real races).
 - [docs/PATCHES.md](docs/PATCHES.md): exactly which bytes of `main.dol` the patcher changes and why.
 
+## Source code
+
+The complete source of every binary in the releases, with the exact commit, is listed in [SOURCE.md](SOURCE.md). The modified Dolphin is the branch `fzero-ax-lan` of <https://github.com/jurulz/dolphin>; the same changes are in [dolphin/patches/](dolphin/patches/).
+
 ## License
 
 The Dolphin patches and everything else in this repository are licensed under **GPL-2.0-or-later** (see [LICENSE](LICENSE)), like Dolphin. Third-party components shipped in the release zip and their licenses are listed in [NOTICE.md](NOTICE.md).
