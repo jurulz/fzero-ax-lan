@@ -4,7 +4,7 @@ Run **F-Zero AX** (Triforce arcade board) on [Dolphin](https://dolphin-emu.org) 
 
 ## TL;DR
 
-You need your own *F-Zero AX (Japan) (Rev E)* ISO and two or more Windows PCs on the same network.
+You need your own **F-Zero AX (Japan) (Rev E)** ISO (game ID `GFZJ8P`, SHA-1 `73f3ddec23c85bc65ae51ed2ce8973231dadaeb1`, details [below](#which-iso)) and two or more Windows PCs on the same network.
 
 1. Download the release zip and unzip it on **each** PC.
 2. Copy your ISO into `Game\`.
@@ -28,6 +28,23 @@ This repository contains:
 > **No game and no firmware are included, and none will be.** You need your own legally obtained dump of
 > *F-Zero AX (Japan) (Rev E)* (`GFZJ8P`). The service-menu firmware `segaboot.gcm` is optional and you must supply it yourself.
 > This project is not affiliated with or endorsed by Sega, Nintendo, Namco or the Dolphin team.
+
+## Which ISO?
+
+Exactly this dump (uncompressed `.iso` / `.gcm`), **before** you patch it:
+
+| | |
+|---|---|
+| Name | **F-Zero AX (Japan) (Rev E)** |
+| Game ID | `GFZJ8P` (first 6 bytes of the file) |
+| Size | 435 995 904 bytes |
+| SHA-1 | `73f3ddec23c85bc65ae51ed2ce8973231dadaeb1` |
+| MD5 | `9070d5677e0950ceb086bced1f8cc423` |
+| CRC32 | `9b1aebaf` |
+
+Check it with `Get-FileHash -Algorithm SHA1 "F-Zero AX (Japan) (Rev E).iso"` in PowerShell. These hashes are those of the **original** file: APPLY modifies the ISO in place (a copy of the original `main.dol` is kept next to it), so its hash changes afterwards.
+
+Other revisions or variants are **not supported** and the patcher refuses them (it checks the game ID, the `main.dol` size and the code around every patched place). Compressed images (RVZ, WIA, GCZ, CISO) must be converted to ISO first (Dolphin: right-click the game > Properties > Convert File). An extracted folder (`sys\` and `files\`) of the same version also works.
 
 ## Status
 

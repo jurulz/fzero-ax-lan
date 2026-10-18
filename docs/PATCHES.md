@@ -1,6 +1,6 @@
 # What the patcher changes in `main.dol`
 
-Only the **Rev E** `main.dol` (`GFZJ8P`, 3 402 368 bytes, SHA-1 `708c0860f61cbabbaae6568fd290c400c5c37c60`) is supported. The patcher checks the DOL header size and the surrounding instructions before writing anything, and can be run again on an already patched file (it always starts from the known original instructions). A copy of the original DOL is kept the first time.
+Only the **Rev E** image is supported: *F-Zero AX (Japan) (Rev E)*, game ID `GFZJ8P`, ISO of 435 995 904 bytes, SHA-1 `73f3ddec23c85bc65ae51ed2ce8973231dadaeb1` (MD5 `9070d5677e0950ceb086bced1f8cc423`, CRC32 `9b1aebaf`). Its `main.dol` is 3 402 368 bytes, SHA-1 `708c0860f61cbabbaae6568fd290c400c5c37c60`. The patcher checks the DOL header size and the surrounding instructions before writing anything, and can be run again on an already patched file (it always starts from the known original instructions). A copy of the original DOL is kept the first time.
 
 In an ISO / GCM image the DOL is read from the offset stored at `0x420` of the image header (`0x18000`), patched in place (its size does not change) and written back at the same place. RVZ / WIA / GCZ / CISO images are refused: convert them to ISO first.
 

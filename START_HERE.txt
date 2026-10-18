@@ -4,6 +4,12 @@ F-ZERO AX LAN FOR DOLPHIN - TL;DR
 You need: your own "F-Zero AX (Japan) (Rev E)" ISO, and two or more Windows 10/11 PCs on the same network.
 (No game and no firmware are included in this download.)
 
+Which ISO? Exactly this one, uncompressed (.iso or .gcm), BEFORE patching it:
+   F-Zero AX (Japan) (Rev E)   game ID GFZJ8P   435,995,904 bytes
+   SHA-1  73f3ddec23c85bc65ae51ed2ce8973231dadaeb1
+   (check: PowerShell > Get-FileHash -Algorithm SHA1 "F-Zero AX (Japan) (Rev E).iso")
+   Other revisions are refused by the patcher. RVZ/WIA/GCZ files must be converted to ISO first.
+
 1. Unzip this folder on EACH PC (same contents everywhere, same Dolphin.exe).
 
 2. Copy your ISO into the Game folder.
